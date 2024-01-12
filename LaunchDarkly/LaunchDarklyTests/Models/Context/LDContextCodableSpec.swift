@@ -35,21 +35,26 @@ final class LDContextCodableSpec: XCTestCase {
 
     func testSingleContextKindsAreDecodedAndEncodedWithoutLossOfInformation() throws {
         let testCases = [
-            "{\"kind\":\"org\",\"key\":\"foo\"}",
-            "{\"kind\":\"user\",\"key\":\"foo\"}",
-            "{\"kind\":\"foo\",\"key\":\"bar\",\"anonymous\":true}",
-            "{\"kind\":\"foo\",\"key\":\"bar\",\"name\":\"Foo\",\"_meta\":{\"privateAttributes\":[\"a\"]}}",
-            "{\"kind\":\"foo\",\"key\":\"bar\",\"object\":{\"a\":\"b\"}}"
+            "{\"key\":\"foo\",\"kind\":\"org\"}",
+            "{\"key\":\"foo\",\"kind\":\"user\"}",
+            "{\"anonymous\":true,\"key\":\"bar\",\"kind\":\"foo\"}",
+            "{\"_meta\":{\"privateAttributes\":[\"a\"]},\"key\":\"bar\",\"kind\":\"foo\",\"name\":\"Foo\"}",
+            "{\"key\":\"bar\",\"kind\":\"foo\",\"object\":{\"a\":\"b\"}}"
         ]
 
         for json in testCases {
             let context = try JSONDecoder().decode(LDContext.self, from: Data(json.utf8))
             let jsonEncoder = JSONEncoder()
+            jsonEncoder.outputFormatting = [.sortedKeys]
             jsonEncoder.userInfo = [LDContext.UserInfoKeys.includePrivateAttributes: true]
             let output = try jsonEncoder.encode(context)
             let outputJson = String(data: output, encoding: .utf8)
 
-            XCTAssertEqual(json, outputJson)
+            // ordering of the values in the string is not guaranteed, we should instead serialize the string
+            // back into a context and ensure that it matches the input context.
+            let contextFromOutput = try JSONDecoder().decode(LDContext.self, from: Data(try XCTUnwrap(outputJson).utf8))
+
+            XCTAssertEqual(context, contextFromOutput)
         }
     }
 

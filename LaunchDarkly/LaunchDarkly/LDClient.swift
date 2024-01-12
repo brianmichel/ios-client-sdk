@@ -245,14 +245,14 @@ public class LDClient {
         Log.debug(typeName(and: #function, appending: "- ") + "stopped")
     }
 
-    @objc private func didEnterBackground() {
+    private func didEnterBackground() {
         Log.debug(typeName(and: #function))
         Thread.performOnMain {
             runMode = .background
         }
     }
 
-    @objc private func willEnterForeground() {
+    private func willEnterForeground() {
         Log.debug(typeName(and: #function))
         Thread.performOnMain {
             runMode = .foreground
@@ -293,13 +293,21 @@ public class LDClient {
         }
 
         internalIdentifyQueue.sync {
+            if self.context == updatedContext {
+                self.eventReporter.record(IdentifyEvent(context: self.context))
+                completion?()
+                return
+            }
+
             self.context = updatedContext
             Log.debug(self.typeName(and: #function) + "new context set with key: " + self.context.fullyQualifiedKey() )
             let wasOnline = self.isOnline
             self.internalSetOnline(false)
 
             let cachedContextFlags = self.flagCache.retrieveFeatureFlags(contextKey: self.context.fullyQualifiedHashedKey()) ?? [:]
+            let oldItems = flagStore.storedItems.featureFlags
             flagStore.replaceStore(newStoredItems: cachedContextFlags)
+            flagChangeNotifier.notifyObservers(oldFlags: oldItems, newFlags: flagStore.storedItems.featureFlags)
             self.service.context = self.context
             self.service.clearFlagResponseCache()
             flagSynchronizer = serviceFactory.makeFlagSynchronizer(streamingMode: ConnectionInformation.effectiveStreamingMode(config: config, ldClient: self),
@@ -565,7 +573,7 @@ public class LDClient {
         }
     }
 
-    @objc private func didCloseEventSource() {
+    private func didCloseEventSource() {
         Log.debug(typeName(and: #function))
         self.connectionInformation = ConnectionInformation.lastSuccessfulConnectionCheck(connectionInformation: self.connectionInformation)
     }
@@ -697,6 +705,8 @@ public class LDClient {
     private var _initialized = false
     private var initializedQueue = DispatchQueue(label: "com.launchdarkly.LDClient.initializedQueue")
 
+    private var notificationTokens = [NSObjectProtocol]()
+
     private init(serviceFactory: ClientServiceCreating, configuration: LDConfig, startContext: LDContext?, completion: (() -> Void)? = nil) {
         self.serviceFactory = serviceFactory
         environmentReporter = self.serviceFactory.makeEnvironmentReporter(config: configuration)
@@ -723,13 +733,22 @@ public class LDClient {
                                                                     service: service)
 
         if let backgroundNotification = SystemCapabilities.backgroundNotification {
-            NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground), name: backgroundNotification, object: nil)
+            let background = NotificationCenter.default.addObserver(forName: backgroundNotification, object:nil, queue: OperationQueue.current, using: { [weak self] notification in
+                self?.didEnterBackground()
+            })
+            notificationTokens.append(background)
         }
         if let foregroundNotification = SystemCapabilities.foregroundNotification {
-            NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: foregroundNotification, object: nil)
+            let foreground = NotificationCenter.default.addObserver(forName: foregroundNotification, object: nil, queue: OperationQueue.current, using: { [weak self] notification in
+                self?.willEnterForeground()
+            })
+            notificationTokens.append(foreground)
         }
 
-        NotificationCenter.default.addObserver(self, selector: #selector(didCloseEventSource), name: Notification.Name(FlagSynchronizer.Constants.didCloseEventSourceName), object: nil)
+        let didClose = NotificationCenter.default.addObserver(forName: Notification.Name(FlagSynchronizer.Constants.didCloseEventSourceName), object: nil, queue: OperationQueue.current, using: { [weak self] _ in
+            self?.didCloseEventSource()
+        })
+        notificationTokens.append(didClose)
 
         eventReporter = self.serviceFactory.makeEventReporter(service: service, onSyncComplete: onEventSyncComplete)
         flagSynchronizer = self.serviceFactory.makeFlagSynchronizer(streamingMode: config.allowStreamingMode ? config.streamingMode : .polling,
